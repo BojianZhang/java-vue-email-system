@@ -1,0 +1,279 @@
+server:
+  port: 9000
+  servlet:
+    context-path: /api
+
+spring:
+  application:
+    name: enterprise-email-system
+  
+  profiles:
+    active: dev
+  
+  # 数据源配置
+  datasource:
+    type: com.alibaba.druid.pool.DruidDataSource
+    druid:
+      driver-class-name: com.mysql.cj.jdbc.Driver
+      url: jdbc:mysql://localhost:3306/enterprise_email?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+      username: ${DB_USERNAME:root}
+      password: ${DB_PASSWORD:123456}
+      initial-size: 5
+      min-idle: 5
+      max-active: 20
+      max-wait: 60000
+      time-between-eviction-runs-millis: 60000
+      min-evictable-idle-time-millis: 300000
+      validation-query: SELECT 1
+      test-while-idle: true
+      test-on-borrow: false
+      test-on-return: false
+      pool-prepared-statements: true
+      max-pool-prepared-statement-per-connection-size: 20
+      # SQL监控过滤器
+      filter:
+        stat:
+          enabled: true
+          merge-sql: true
+          slow-sql-millis: 5000
+      # Web监控
+      web-stat-filter:
+        enabled: true
+        url-pattern: /*
+        exclusions: "*.js,*.gif,*.jpg,*.png,*.css,*.ico,/druid/*"
+      stat-view-servlet:
+        enabled: true
+        url-pattern: /druid/*
+        reset-enable: false
+        login-username: admin
+        login-password: admin123
+
+  # Redis配置
+  redis:
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    password: ${REDIS_PASSWORD:}
+    database: 0
+    timeout: 5000ms
+    lettuce:
+      pool:
+        max-active: 8
+        max-idle: 8
+        min-idle: 0
+        max-wait: -1ms
+
+  # 邮件配置
+  mail:
+    host: ${MAIL_HOST:smtp.qq.com}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:your-email@qq.com}
+    password: ${MAIL_PASSWORD:your-auth-code}
+    protocol: smtp
+    test-connection: false
+    default-encoding: UTF-8
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+            required: true
+          ssl:
+            trust: ${MAIL_HOST:smtp.qq.com}
+
+  # 文件上传配置
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 50MB
+      max-request-size: 100MB
+
+  # Jackson配置
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: GMT+8
+    serialization:
+      write-dates-as-timestamps: false
+
+# MyBatis Plus配置
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.enterprise.email.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    cache-enabled: false
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: ASSIGN_ID
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# 日志配置
+logging:
+  level:
+    com.enterprise.email: DEBUG
+    org.springframework.security: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{50} - %msg%n"
+  file:
+    name: logs/email-system.log
+
+# 应用配置
+app:
+  # JWT配置
+  jwt:
+    secret: ${JWT_SECRET:enterprise-email-system-jwt-secret-key-2024}
+    expiration: 86400000  # 24小时 (毫秒)
+    refresh-expiration: 604800000  # 7天 (毫秒)
+  
+  # 安全监控配置
+  security:
+    # 登录监控
+    login-monitoring:
+      enabled: true
+      retention-days: 90
+      geo-cache-hours: 24
+    
+    # 异常检测
+    anomaly-detection:
+      enabled: true
+      geo-distance-km: 500
+      time-window-hours: 6
+      frequency-limit: 10
+      frequency-window-minutes: 30
+      max-concurrent-sessions: 5
+    
+    # 风险评分
+    risk-scoring:
+      base-score: 10
+      geo-anomaly-score: 25
+      new-device-score: 15
+      suspicious-ip-score: 30
+      high-risk-threshold: 70
+    
+    # 通知配置
+    notifications:
+      enabled: true
+      admin-emails: admin@example.com
+      severity-level: medium
+      rate-limit: 5
+      rate-window-minutes: 60
+    
+    # 会话管理
+    session:
+      timeout-hours: 24
+      remember-me-days: 30
+      force-single-session: false
+      trusted-device-days: 90
+
+  # 邮件系统配置
+  email:
+    # IMAP配置
+    imap:
+      host: ${IMAP_HOST:imap.qq.com}
+      port: ${IMAP_PORT:993}
+      ssl: true
+    
+    # SMTP配置
+    smtp:
+      host: ${SMTP_HOST:smtp.qq.com}
+      port: ${SMTP_PORT:587}
+      ssl: true
+    
+    # 存储配置
+    storage:
+      path: ${EMAIL_STORAGE_PATH:/data/emails}
+      max-size: 100MB
+
+# SSL证书管理配置
+ssl:
+  # Let's Encrypt配置
+  lets-encrypt:
+    enabled: true
+    email: ${LETS_ENCRYPT_EMAIL:admin@example.com}
+    staging: ${LETS_ENCRYPT_STAGING:false}
+    agree-tos: true
+    key-size: 2048
+    
+  # 证书存储配置
+  storage:
+    certs-dir: ${SSL_CERTS_DIR:/opt/ssl/certs}
+    backups-dir: ${SSL_BACKUPS_DIR:/opt/ssl/backups}
+    temp-dir: ${SSL_TEMP_DIR:/tmp/ssl}
+    
+  # 自动续期配置
+  auto-renewal:
+    enabled: true
+    days-before-expiry: 30
+    max-attempts: 3
+    retry-delay-hours: 24
+    
+  # Nginx集成配置
+  nginx:
+    enabled: true
+    config-dir: ${NGINX_CONFIG_DIR:/etc/nginx/conf.d}
+    ssl-config-template: ssl-template.conf
+    restart-command: systemctl reload nginx
+    
+  # 监控配置
+  monitoring:
+    enabled: true
+    scan-interval-hours: 6
+    alert-days-before-expiry: 7
+    
+  # 异步处理配置
+  async:
+    core-pool-size: ${SSL_CORE_POOL_SIZE:5}
+    max-pool-size: ${SSL_MAX_POOL_SIZE:20}
+    queue-capacity: ${SSL_QUEUE_CAPACITY:100}
+    keep-alive-seconds: ${SSL_KEEP_ALIVE_SECONDS:300}
+    thread-name-prefix: ${SSL_THREAD_PREFIX:ssl-task-}
+
+# 管理端点配置
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,ssl-certificates
+  endpoint:
+    health:
+      show-details: always
+    ssl-certificates:
+      enabled: true
+  info:
+    env:
+      enabled: true
+  # Prometheus指标配置
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+        step: 10s
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+        ssl.certificates.obtain.duration: true
+        ssl.certificates.renewal.duration: true
+        ssl.certificates.validation.duration: true
+
+---
+# 开发环境配置
+spring:
+  config:
+    activate:
+      on-profile: dev
+  datasource:
+    druid:
+      url: jdbc:mysql://localhost:3306/enterprise_email?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+
+---
+# 生产环境配置
+spring:
+  config:
+    activate:
+      on-profile: prod
+  datasource:
+    druid:
+      url: jdbc:mysql://mysql:3306/enterprise_email?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true

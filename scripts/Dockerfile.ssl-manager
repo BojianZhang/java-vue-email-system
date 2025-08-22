@@ -1,0 +1,82 @@
+# SSL Certificate Manager Docker Image
+FROM alpine:latest
+
+# Install dependencies
+RUN apk add --no-cache \
+    bash \
+    curl \
+    openssl \
+    nginx \
+    certbot \
+    py3-certbot-nginx \
+    docker \
+    jq \
+    mailx \
+    netcat-openbsd \
+    bind-tools \
+    dcron \
+    logrotate
+
+# Create directories
+RUN mkdir -p /opt/ssl/scripts \
+             /opt/ssl/certs \
+             /opt/ssl/backups \
+             /opt/ssl/logs \
+             /opt/ssl/hooks \
+             /var/log/ssl
+
+# Copy SSL management scripts
+COPY ssl-deploy.sh /opt/ssl/scripts/
+COPY ssl-monitor.sh /opt/ssl/scripts/
+COPY ssl-renewal-hooks.sh /opt/ssl/scripts/
+COPY ssl-config.conf /opt/ssl/scripts/
+
+# Make scripts executable
+RUN chmod +x /opt/ssl/scripts/*.sh
+
+# Create symbolic links
+RUN ln -s /opt/ssl/scripts/ssl-deploy.sh /usr/local/bin/ssl-deploy && \
+    ln -s /opt/ssl/scripts/ssl-monitor.sh /usr/local/bin/ssl-monitor
+
+# Create cron job for SSL monitoring
+RUN echo "0 2 * * * /opt/ssl/scripts/ssl-monitor.sh renew >> /var/log/ssl/cron.log 2>&1" > /etc/crontabs/root && \
+    echo "0 */6 * * * /opt/ssl/scripts/ssl-monitor.sh scan >> /var/log/ssl/cron.log 2>&1" >> /etc/crontabs/root
+
+# Setup log rotation
+RUN echo "/var/log/ssl/*.log {" > /etc/logrotate.d/ssl && \
+    echo "    daily" >> /etc/logrotate.d/ssl && \
+    echo "    missingok" >> /etc/logrotate.d/ssl && \
+    echo "    rotate 30" >> /etc/logrotate.d/ssl && \
+    echo "    compress" >> /etc/logrotate.d/ssl && \
+    echo "    delaycompress" >> /etc/logrotate.d/ssl && \
+    echo "    notifempty" >> /etc/logrotate.d/ssl && \
+    echo "    create 644 root root" >> /etc/logrotate.d/ssl && \
+    echo "}" >> /etc/logrotate.d/ssl
+
+# Create startup script
+RUN echo '#!/bin/bash' > /usr/local/bin/ssl-manager-start && \
+    echo 'set -e' >> /usr/local/bin/ssl-manager-start && \
+    echo 'echo "Starting SSL Certificate Manager..."' >> /usr/local/bin/ssl-manager-start && \
+    echo '' >> /usr/local/bin/ssl-manager-start && \
+    echo '# Start cron daemon' >> /usr/local/bin/ssl-manager-start && \
+    echo 'crond -b' >> /usr/local/bin/ssl-manager-start && \
+    echo '' >> /usr/local/bin/ssl-manager-start && \
+    echo '# Initial health check' >> /usr/local/bin/ssl-manager-start && \
+    echo '/opt/ssl/scripts/ssl-monitor.sh scan' >> /usr/local/bin/ssl-manager-start && \
+    echo '' >> /usr/local/bin/ssl-manager-start && \
+    echo '# Keep container running and monitor logs' >> /usr/local/bin/ssl-manager-start && \
+    echo 'tail -f /var/log/ssl/*.log /dev/null' >> /usr/local/bin/ssl-manager-start && \
+    chmod +x /usr/local/bin/ssl-manager-start
+
+# Set working directory
+WORKDIR /opt/ssl
+
+# Expose volumes
+VOLUME ["/opt/ssl/certs", "/opt/ssl/backups", "/var/log/ssl"]
+
+# Health check
+HEALTHCHECK --interval=300s --timeout=60s --start-period=120s --retries=3 \
+    CMD /opt/ssl/scripts/ssl-monitor.sh scan || exit 1
+
+# Start the SSL manager
+CMD ["/usr/local/bin/ssl-manager-start"]

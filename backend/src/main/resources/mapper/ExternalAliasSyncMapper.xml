@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.enterprise.email.mapper.ExternalAliasSyncMapper">
+
+    <!-- 结果映射 -->
+    <resultMap id="ExternalAliasSyncResult" type="com.enterprise.email.entity.ExternalAliasSync">
+        <id property="id" column="id"/>
+        <result property="aliasId" column="alias_id"/>
+        <result property="platformType" column="platform_type"/>
+        <result property="platformUrl" column="platform_url"/>
+        <result property="apiKey" column="api_key"/>
+        <result property="externalUsername" column="external_username"/>
+        <result property="externalPassword" column="external_password"/>
+        <result property="externalAliasId" column="external_alias_id"/>
+        <result property="externalAliasAddress" column="external_alias_address"/>
+        <result property="externalAliasName" column="external_alias_name"/>
+        <result property="externalAliasDescription" column="external_alias_description"/>
+        <result property="autoSyncEnabled" column="auto_sync_enabled"/>
+        <result property="syncFrequencyMinutes" column="sync_frequency_minutes"/>
+        <result property="lastSyncTime" column="last_sync_time"/>
+        <result property="lastSyncStatus" column="last_sync_status"/>
+        <result property="lastSyncError" column="last_sync_error"/>
+        <result property="retryCount" column="retry_count"/>
+        <result property="isActive" column="is_active"/>
+        <result property="createTime" column="create_time"/>
+        <result property="updateTime" column="update_time"/>
+        <result property="createdBy" column="created_by"/>
+        <result property="updatedBy" column="updated_by"/>
+        <!-- 关联查询字段 -->
+        <result property="aliasAddress" column="alias_address"/>
+        <result property="localAliasName" column="local_alias_name"/>
+    </resultMap>
+
+    <!-- 分页查询同步配置 -->
+    <select id="selectSyncConfigsPage" resultMap="ExternalAliasSyncResult">
+        SELECT 
+            eas.*,
+            ua.alias_address,
+            ua.alias_name as local_alias_name
+        FROM external_alias_sync eas
+        LEFT JOIN user_aliases ua ON eas.alias_id = ua.id
+        <where>
+            ua.user_id = #{userId}
+            <if test="platformType != null and platformType != ''">
+                AND eas.platform_type = #{platformType}
+            </if>
+            <if test="syncStatus != null and syncStatus != ''">
+                AND eas.last_sync_status = #{syncStatus}
+            </if>
+        </where>
+        ORDER BY eas.last_sync_time DESC, eas.create_time DESC
+    </select>
+
+    <!-- 根据用户ID查询活跃的同步配置统计 -->
+    <select id="countActiveSyncsByUserId" resultType="int">
+        SELECT COUNT(*)
+        FROM external_alias_sync eas
+        LEFT JOIN user_aliases ua ON eas.alias_id = ua.id
+        WHERE ua.user_id = #{userId} 
+        AND eas.is_active = true
+        AND eas.auto_sync_enabled = true
+    </select>
+
+    <!-- 根据平台类型查询同步配置统计 -->
+    <select id="countSyncsByPlatformType" resultType="java.util.Map">
+        SELECT 
+            platform_type as platformType,
+            COUNT(*) as count,
+            SUM(CASE WHEN last_sync_status = 'SUCCESS' THEN 1 ELSE 0 END) as successCount,
+            SUM(CASE WHEN last_sync_status = 'FAILED' THEN 1 ELSE 0 END) as failedCount
+        FROM external_alias_sync
+        WHERE is_active = true
+        GROUP BY platform_type
+    </select>
+
+    <!-- 查询最近同步的配置（用于监控面板） -->
+    <select id="getRecentSyncActivities" resultMap="ExternalAliasSyncResult">
+        SELECT 
+            eas.*,
+            ua.alias_address,
+            ua.alias_name as local_alias_name
+        FROM external_alias_sync eas
+        LEFT JOIN user_aliases ua ON eas.alias_id = ua.id
+        WHERE eas.last_sync_time IS NOT NULL
+        ORDER BY eas.last_sync_time DESC
+        LIMIT #{limit}
+    </select>
+
+    <!-- 查询同步状态统计 -->
+    <select id="getSyncStatusStats" resultType="java.util.Map">
+        SELECT 
+            last_sync_status as status,
+            COUNT(*) as count,
+            AVG(retry_count) as avgRetryCount
+        FROM external_alias_sync
+        WHERE is_active = true
+        GROUP BY last_sync_status
+    </select>
+
+    <!-- 查询需要立即同步的配置（超过同步频率时间且启用自动同步） -->
+    <select id="findOverdueSyncConfigs" resultMap="ExternalAliasSyncResult">
+        SELECT 
+            eas.*,
+            ua.alias_address,
+            ua.alias_name as local_alias_name
+        FROM external_alias_sync eas
+        LEFT JOIN user_aliases ua ON eas.alias_id = ua.id
+        WHERE eas.auto_sync_enabled = true
+        AND eas.is_active = true
+        AND (
+            eas.last_sync_time IS NULL 
+            OR eas.last_sync_time &lt;= DATE_SUB(NOW(), INTERVAL eas.sync_frequency_minutes MINUTE)
+        )
+        AND eas.retry_count &lt; 5
+        ORDER BY 
+            CASE WHEN eas.last_sync_time IS NULL THEN 0 ELSE 1 END,
+            eas.last_sync_time ASC
+        LIMIT #{limit}
+    </select>
+
+    <!-- 重置失败次数过多的配置 -->
+    <update id="resetFailedConfigs">
+        UPDATE external_alias_sync 
+        SET retry_count = 0, 
+            last_sync_error = NULL,
+            update_time = NOW()
+        WHERE retry_count >= 5 
+        AND last_sync_time &lt;= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+    </update>
+
+    <!-- 批量更新同步状态 -->
+    <update id="batchUpdateSyncStatus">
+        <foreach collection="syncResults" item="item" separator=";">
+            UPDATE external_alias_sync 
+            SET last_sync_time = #{item.lastSyncTime},
+                last_sync_status = #{item.status},
+                last_sync_error = #{item.error},
+                retry_count = #{item.retryCount},
+                update_time = NOW()
+            WHERE id = #{item.id}
+        </foreach>
+    </update>
+
+    <!-- 清理过期的同步配置 -->
+    <delete id="cleanupInactiveConfigs">
+        DELETE FROM external_alias_sync 
+        WHERE is_active = false 
+        AND update_time &lt;= DATE_SUB(NOW(), INTERVAL #{daysBefore} DAY)
+    </delete>
+
+    <!-- 获取平台健康状态统计 -->
+    <select id="getPlatformHealthStats" resultType="java.util.Map">
+        SELECT 
+            platform_type as platformType,
+            COUNT(*) as totalConfigs,
+            SUM(CASE WHEN is_active = true THEN 1 ELSE 0 END) as activeConfigs,
+            SUM(CASE WHEN last_sync_status = 'SUCCESS' AND last_sync_time >= DATE_SUB(NOW(), INTERVAL 1 HOUR) THEN 1 ELSE 0 END) as recentSuccessCount,
+            SUM(CASE WHEN last_sync_status = 'FAILED' THEN 1 ELSE 0 END) as failedCount,
+            AVG(CASE WHEN last_sync_status = 'SUCCESS' THEN sync_frequency_minutes ELSE NULL END) as avgSyncFrequency
+        FROM external_alias_sync
+        GROUP BY platform_type
+    </select>
+
+    <!-- 查询用户的同步配置详情（包含别名信息） -->
+    <select id="getUserSyncDetails" resultMap="ExternalAliasSyncResult">
+        SELECT 
+            eas.*,
+            ua.alias_address,
+            ua.alias_name as local_alias_name,
+            ua.is_default as alias_is_default,
+            d.domain_name
+        FROM external_alias_sync eas
+        LEFT JOIN user_aliases ua ON eas.alias_id = ua.id
+        LEFT JOIN domains d ON ua.domain_id = d.id
+        WHERE ua.user_id = #{userId}
+        AND eas.is_active = true
+        ORDER BY ua.is_default DESC, eas.last_sync_time DESC
+    </select>
+</mapper>

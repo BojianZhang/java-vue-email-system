@@ -1,0 +1,640 @@
+#!/bin/bash
+
+# SSL Certificate Management CLI Tool
+# 企业级SSL证书管理命令行工具
+# Version: 2.0.0
+
+set -euo pipefail
+
+# 配置文件
+CONFIG_FILE="${SSL_CONFIG_FILE:-/opt/ssl/scripts/ssl-config.conf}"
+LOCK_FILE="/var/lock/ssl-certificate-cli.lock"
+
+# 默认配置
+DEFAULT_API_BASE="http://localhost:9000/api"
+DEFAULT_ADMIN_TOKEN=""
+DEFAULT_LOG_LEVEL="INFO"
+
+# 颜色定义
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly PURPLE='\033[0;35m'
+readonly CYAN='\033[0;36m'
+readonly WHITE='\033[1;37m'
+readonly NC='\033[0m' # No Color
+
+# 日志函数
+log() {
+    local level="$1"
+    shift
+    local message="$*"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    case "$level" in
+        ERROR)   echo -e "${RED}[ERROR]${NC} ${timestamp} - $message" >&2 ;;
+        WARN)    echo -e "${YELLOW}[WARN]${NC} ${timestamp} - $message" ;;
+        INFO)    echo -e "${GREEN}[INFO]${NC} ${timestamp} - $message" ;;
+        DEBUG)   [[ "${LOG_LEVEL:-INFO}" == "DEBUG" ]] && echo -e "${BLUE}[DEBUG]${NC} ${timestamp} - $message" ;;
+        SUCCESS) echo -e "${GREEN}[SUCCESS]${NC} ${timestamp} - $message" ;;
+    esac
+}
+
+# 错误处理
+error_exit() {
+    log "ERROR" "$1"
+    cleanup
+    exit 1
+}
+
+# 清理函数
+cleanup() {
+    [[ -f "$LOCK_FILE" ]] && rm -f "$LOCK_FILE"
+}
+
+# 信号处理
+trap cleanup EXIT
+trap 'error_exit "脚本被中断"' INT TERM
+
+# 检查依赖
+check_dependencies() {
+    local deps=("curl" "jq" "openssl")
+    for dep in "${deps[@]}"; do
+        if ! command -v "$dep" &> /dev/null; then
+            error_exit "缺少依赖: $dep"
+        fi
+    done
+}
+
+# 加载配置
+load_config() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        source "$CONFIG_FILE"
+        log "INFO" "已加载配置文件: $CONFIG_FILE"
+    else
+        log "WARN" "配置文件不存在，使用默认配置: $CONFIG_FILE"
+    fi
+    
+    # 设置默认值
+    API_BASE="${API_BASE:-$DEFAULT_API_BASE}"
+    ADMIN_TOKEN="${ADMIN_TOKEN:-$DEFAULT_ADMIN_TOKEN}"
+    LOG_LEVEL="${LOG_LEVEL:-$DEFAULT_LOG_LEVEL}"
+}
+
+# 获取锁
+acquire_lock() {
+    if [[ -f "$LOCK_FILE" ]]; then
+        local pid=$(cat "$LOCK_FILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            error_exit "另一个SSL证书管理进程正在运行 (PID: $pid)"
+        else
+            log "WARN" "发现无效的锁文件，正在清理"
+            rm -f "$LOCK_FILE"
+        fi
+    fi
+    
+    echo $$ > "$LOCK_FILE"
+    log "DEBUG" "已获取锁文件: $LOCK_FILE"
+}
+
+# API调用函数
+api_call() {
+    local method="$1"
+    local endpoint="$2"
+    local data="${3:-}"
+    local content_type="${4:-application/json}"
+    
+    local url="${API_BASE}${endpoint}"
+    local curl_args=("-s" "-X" "$method" "-H" "Content-Type: $content_type")
+    
+    if [[ -n "$ADMIN_TOKEN" ]]; then
+        curl_args+=("-H" "Authorization: Bearer $ADMIN_TOKEN")
+    fi
+    
+    if [[ -n "$data" && "$method" != "GET" ]]; then
+        curl_args+=("-d" "$data")
+    fi
+    
+    log "DEBUG" "API调用: $method $url"
+    
+    local response
+    if ! response=$(curl "${curl_args[@]}" "$url" 2>/dev/null); then
+        error_exit "API调用失败: $method $url"
+    fi
+    
+    echo "$response"
+}
+
+# 格式化输出
+format_json() {
+    if command -v jq &> /dev/null; then
+        jq '.'
+    else
+        cat
+    fi
+}
+
+# 显示帮助信息
+show_help() {
+    cat << 'EOF'
+SSL Certificate Management CLI Tool v2.0.0
+企业级SSL证书管理命令行工具
+
+用法: ssl-cli [COMMAND] [OPTIONS]
+
+证书管理命令:
+  list                          列出所有SSL证书
+  show <domain>                 显示指定域名的证书详情
+  obtain <domain> <email>       获取Let's Encrypt证书
+  upload <domain> <cert> <key>  上传自定义证书
+  renew <domain>                续期指定域名的证书
+  delete <domain>               删除指定域名的证书
+  apply <domain>                应用证书到Nginx配置
+
+批量操作命令:
+  batch-validate <ids>          批量验证证书 (逗号分隔的ID)
+  batch-renew <ids>             批量续期证书 (逗号分隔的ID)
+  auto-renew                    自动续期即将过期的证书
+
+监控命令:
+  status                        显示系统状态
+  metrics                       显示性能指标
+  health                        检查系统健康状态
+  report                        生成监控报告
+  alerts                        显示告警信息
+
+高级功能:
+  performance                   启动智能性能优化
+  predictive                    显示预测性分析
+  usage-stats                   显示使用统计
+
+配置命令:
+  config show                   显示当前配置
+  config set <key> <value>      设置配置项
+  config reset                  重置配置
+
+系统命令:
+  backup                        备份SSL证书
+  restore <backup_file>         恢复SSL证书
+  cleanup                       清理过期备份
+  test <domain>                 测试证书配置
+
+选项:
+  -h, --help                    显示帮助信息
+  -v, --verbose                 详细输出
+  -q, --quiet                   静默模式
+  -c, --config <file>          指定配置文件
+  --api-base <url>             指定API基础URL
+  --token <token>              指定认证令牌
+  --format <json|table|plain>   输出格式
+
+示例:
+  ssl-cli list                                    # 列出所有证书
+  ssl-cli obtain example.com admin@example.com   # 获取证书
+  ssl-cli show example.com                        # 显示证书详情
+  ssl-cli renew example.com                       # 续期证书
+  ssl-cli batch-validate 1,2,3,4                 # 批量验证
+  ssl-cli status                                  # 显示状态
+  ssl-cli backup                                  # 备份证书
+
+配置文件: /opt/ssl/scripts/ssl-config.conf
+日志文件: /var/log/ssl-cli.log
+EOF
+}
+
+# 列出所有证书
+cmd_list() {
+    local format="${1:-table}"
+    
+    log "INFO" "获取SSL证书列表"
+    
+    local response
+    response=$(api_call "GET" "/ssl/certificates")
+    
+    if [[ $(echo "$response" | jq -r '.code // empty') != "200" ]]; then
+        error_exit "获取证书列表失败: $(echo "$response" | jq -r '.message // "未知错误"')"
+    fi
+    
+    local certificates
+    certificates=$(echo "$response" | jq -r '.data // []')
+    
+    case "$format" in
+        "json")
+            echo "$certificates" | format_json
+            ;;
+        "table")
+            echo -e "${WHITE}ID\tDomain\t\t\tType\t\tStatus\t\tExpiry${NC}"
+            echo "=================================================================="
+            echo "$certificates" | jq -r '.[] | "\(.id)\t\(.domain)\t\t\(.certType)\t\(.status)\t\(.expiresAt)"'
+            ;;
+        "plain")
+            echo "$certificates" | jq -r '.[] | "\(.domain) \(.status) \(.expiresAt)"'
+            ;;
+    esac
+}
+
+# 显示证书详情
+cmd_show() {
+    local domain="$1"
+    
+    log "INFO" "获取域名 $domain 的证书详情"
+    
+    local response
+    response=$(api_call "GET" "/ssl/certificates/domain/$domain")
+    
+    if [[ $(echo "$response" | jq -r '.code // empty') != "200" ]]; then
+        error_exit "获取证书详情失败: $(echo "$response" | jq -r '.message // "未知错误"')"
+    fi
+    
+    local certificate
+    certificate=$(echo "$response" | jq -r '.data')
+    
+    echo -e "${WHITE}SSL Certificate Details${NC}"
+    echo "=========================="
+    echo -e "${CYAN}Domain:${NC}      $(echo "$certificate" | jq -r '.domain')"
+    echo -e "${CYAN}Type:${NC}        $(echo "$certificate" | jq -r '.certType')"
+    echo -e "${CYAN}Status:${NC}      $(echo "$certificate" | jq -r '.status')"
+    echo -e "${CYAN}Issued:${NC}      $(echo "$certificate" | jq -r '.issuedAt')"
+    echo -e "${CYAN}Expires:${NC}     $(echo "$certificate" | jq -r '.expiresAt')"
+    echo -e "${CYAN}Auto Renew:${NC}  $(echo "$certificate" | jq -r '.autoRenew')"
+    echo -e "${CYAN}Issuer:${NC}      $(echo "$certificate" | jq -r '.issuer // "N/A"')"
+    
+    if [[ $(echo "$certificate" | jq -r '.certPath') != "null" ]]; then
+        echo -e "${CYAN}Cert Path:${NC}   $(echo "$certificate" | jq -r '.certPath')"
+        echo -e "${CYAN}Key Path:${NC}    $(echo "$certificate" | jq -r '.keyPath')"
+    fi
+}
+
+# 获取Let's Encrypt证书
+cmd_obtain() {
+    local domain="$1"
+    local email="$2"
+    local challenge_type="${3:-HTTP01}"
+    
+    log "INFO" "为域名 $domain 获取Let's Encrypt证书"
+    
+    local data
+    data=$(jq -n \
+        --arg domain "$domain" \
+        --arg email "$email" \
+        --arg challengeType "$challenge_type" \
+        '{domain: $domain, email: $email, challengeType: $challengeType}')
+    
+    local response
+    response=$(api_call "POST" "/ssl/certificates/lets-encrypt" "$data")
+    
+    if [[ $(echo "$response" | jq -r '.code // empty') != "200" ]]; then
+        error_exit "获取证书失败: $(echo "$response" | jq -r '.message // "未知错误"')"
+    fi
+    
+    log "SUCCESS" "证书获取成功！"
+    
+    local certificate
+    certificate=$(echo "$response" | jq -r '.data')
+    echo -e "${GREEN}证书已成功获取并配置:${NC}"
+    echo -e "  域名: $(echo "$certificate" | jq -r '.domain')"
+    echo -e "  过期时间: $(echo "$certificate" | jq -r '.expiresAt')"
+}
+
+# 上传自定义证书
+cmd_upload() {
+    local domain="$1"
+    local cert_file="$2"
+    local key_file="$3"
+    local chain_file="${4:-}"
+    
+    if [[ ! -f "$cert_file" ]]; then
+        error_exit "证书文件不存在: $cert_file"
+    fi
+    
+    if [[ ! -f "$key_file" ]]; then
+        error_exit "私钥文件不存在: $key_file"
+    fi
+    
+    log "INFO" "为域名 $domain 上传自定义证书"
+    
+    # 构建multipart/form-data请求
+    local curl_args=(
+        "-s" "-X" "POST"
+        "-F" "domain=$domain"
+        "-F" "certFile=@$cert_file"
+        "-F" "keyFile=@$key_file"
+    )
+    
+    if [[ -n "$chain_file" && -f "$chain_file" ]]; then
+        curl_args+=("-F" "chainFile=@$chain_file")
+    fi
+    
+    if [[ -n "$ADMIN_TOKEN" ]]; then
+        curl_args+=("-H" "Authorization: Bearer $ADMIN_TOKEN")
+    fi
+    
+    local response
+    if ! response=$(curl "${curl_args[@]}" "${API_BASE}/ssl/certificates/upload"); then
+        error_exit "上传证书失败"
+    fi
+    
+    if [[ $(echo "$response" | jq -r '.code // empty') != "200" ]]; then
+        error_exit "上传证书失败: $(echo "$response" | jq -r '.message // "未知错误"')"
+    fi
+    
+    log "SUCCESS" "证书上传成功！"
+}
+
+# 续期证书
+cmd_renew() {
+    local domain="$1"
+    
+    log "INFO" "续期域名 $domain 的证书"
+    
+    local response
+    response=$(api_call "POST" "/ssl/certificates/domain/$domain/renew")
+    
+    if [[ $(echo "$response" | jq -r '.code // empty') != "200" ]]; then
+        error_exit "证书续期失败: $(echo "$response" | jq -r '.message // "未知错误"')"
+    fi
+    
+    log "SUCCESS" "证书续期成功！"
+}
+
+# 批量验证证书
+cmd_batch_validate() {
+    local ids="$1"
+    
+    log "INFO" "批量验证证书: $ids"
+    
+    local id_array
+    id_array=$(echo "$ids" | tr ',' '\n' | jq -R 'tonumber' | jq -s '.')
+    
+    local response
+    response=$(api_call "POST" "/ssl/performance/batch-validate" "$id_array")
+    
+    if [[ $(echo "$response" | jq -r '.code // empty') != "200" ]]; then
+        error_exit "批量验证失败: $(echo "$response" | jq -r '.message // "未知错误"')"
+    fi
+    
+    local task_id
+    task_id=$(echo "$response" | jq -r '.data')
+    log "SUCCESS" "批量验证任务已启动，任务ID: $task_id"
+}
+
+# 批量续期证书
+cmd_batch_renew() {
+    local ids="$1"
+    
+    log "INFO" "批量续期证书: $ids"
+    
+    local id_array
+    id_array=$(echo "$ids" | tr ',' '\n' | jq -R 'tonumber' | jq -s '.')
+    
+    local response
+    response=$(api_call "POST" "/ssl/performance/parallel-renewal" "$id_array")
+    
+    if [[ $(echo "$response" | jq -r '.code // empty') != "200" ]]; then
+        error_exit "批量续期失败: $(echo "$response" | jq -r '.message // "未知错误"')"
+    fi
+    
+    local task_id
+    task_id=$(echo "$response" | jq -r '.data')
+    log "SUCCESS" "批量续期任务已启动，任务ID: $task_id"
+}
+
+# 显示系统状态
+cmd_status() {
+    log "INFO" "获取系统状态"
+    
+    local response
+    response=$(api_call "GET" "/ssl/performance/monitoring/summary")
+    
+    if [[ $(echo "$response" | jq -r '.code // empty') != "200" ]]; then
+        error_exit "获取系统状态失败: $(echo "$response" | jq -r '.message // "未知错误"')"
+    fi
+    
+    local metrics
+    metrics=$(echo "$response" | jq -r '.data')
+    
+    echo -e "${WHITE}SSL Certificate System Status${NC}"
+    echo "================================"
+    echo -e "${CYAN}Active Certificates:${NC}    $(echo "$metrics" | jq -r '.activeCertificates // 0')"
+    echo -e "${CYAN}Expiring Certificates:${NC}  $(echo "$metrics" | jq -r '.expiringCertificates // 0')"
+    echo -e "${CYAN}Expired Certificates:${NC}   $(echo "$metrics" | jq -r '.expiredCertificates // 0')"
+    echo -e "${CYAN}Success Rate:${NC}           $(echo "$metrics" | jq -r '.successRate // 0')%"
+    echo -e "${CYAN}Total Obtained:${NC}         $(echo "$metrics" | jq -r '.totalObtained // 0')"
+    echo -e "${CYAN}Total Renewed:${NC}          $(echo "$metrics" | jq -r '.totalRenewed // 0')"
+    echo -e "${CYAN}Total Errors:${NC}           $(echo "$metrics" | jq -r '.totalErrors // 0')"
+}
+
+# 显示性能指标
+cmd_metrics() {
+    log "INFO" "获取性能指标"
+    
+    local response
+    response=$(api_call "GET" "/ssl/performance/metrics")
+    
+    if [[ $(echo "$response" | jq -r '.code // empty') != "200" ]]; then
+        error_exit "获取性能指标失败: $(echo "$response" | jq -r '.message // "未知错误"')"
+    fi
+    
+    local metrics
+    metrics=$(echo "$response" | jq -r '.data')
+    
+    echo -e "${WHITE}Performance Metrics${NC}"
+    echo "==================="
+    echo -e "${CYAN}Validation Latency:${NC}     $(echo "$metrics" | jq -r '.certificateValidationLatency // 0') ms"
+    echo -e "${CYAN}Renewal Success Rate:${NC}   $(echo "$metrics" | jq -r '.renewalSuccessRate // 0 | . * 100')%"
+    echo -e "${CYAN}Avg Renewal Duration:${NC}   $(echo "$metrics" | jq -r '.averageRenewalDuration // 0 | . / 1000') s"
+    echo -e "${CYAN}Concurrent Operations:${NC}  $(echo "$metrics" | jq -r '.concurrentOperations // 0')"
+    echo -e "${CYAN}System Resource Usage:${NC}  $(echo "$metrics" | jq -r '.systemResourceUsage // 0')%"
+}
+
+# 生成监控报告
+cmd_report() {
+    log "INFO" "生成监控报告"
+    
+    local response
+    response=$(api_call "GET" "/ssl/performance/monitoring/report")
+    
+    if [[ $(echo "$response" | jq -r '.code // empty') != "200" ]]; then
+        error_exit "生成报告失败: $(echo "$response" | jq -r '.message // "未知错误"')"
+    fi
+    
+    local report
+    report=$(echo "$response" | jq -r '.data')
+    
+    echo "$report"
+}
+
+# 智能性能优化
+cmd_performance() {
+    log "INFO" "启动智能性能优化"
+    
+    local response
+    response=$(api_call "POST" "/ssl/performance/intelligent-renewal")
+    
+    if [[ $(echo "$response" | jq -r '.code // empty') != "200" ]]; then
+        error_exit "启动性能优化失败: $(echo "$response" | jq -r '.message // "未知错误"')"
+    fi
+    
+    local task_id
+    task_id=$(echo "$response" | jq -r '.data')
+    log "SUCCESS" "智能性能优化已启动，任务ID: $task_id"
+}
+
+# 预测性分析
+cmd_predictive() {
+    log "INFO" "获取预测性分析"
+    
+    local response
+    response=$(api_call "GET" "/ssl/performance/predictive-analysis")
+    
+    if [[ $(echo "$response" | jq -r '.code // empty') != "200" ]]; then
+        error_exit "获取预测分析失败: $(echo "$response" | jq -r '.message // "未知错误"')"
+    fi
+    
+    local analysis
+    analysis=$(echo "$response" | jq -r '.data')
+    
+    echo -e "${WHITE}Predictive Analysis${NC}"
+    echo "==================="
+    echo -e "${CYAN}Certificates expiring in 7 days:${NC}  $(echo "$analysis" | jq -r '.certificatesExpiringIn7Days // 0')"
+    echo -e "${CYAN}Certificates expiring in 30 days:${NC} $(echo "$analysis" | jq -r '.certificatesExpiringIn30Days // 0')"
+    echo -e "${CYAN}Average renewal success rate:${NC}     $(echo "$analysis" | jq -r '.averageRenewalSuccessRate // 0 | . * 100')%"
+    
+    local recommendations
+    recommendations=$(echo "$analysis" | jq -r '.recommendations[]? // empty')
+    if [[ -n "$recommendations" ]]; then
+        echo -e "\n${YELLOW}Recommendations:${NC}"
+        echo "$recommendations" | while read -r rec; do
+            echo "  • $rec"
+        done
+    fi
+}
+
+# 备份证书
+cmd_backup() {
+    local backup_dir="${SSL_BACKUPS_DIR:-/opt/ssl/backups}"
+    local timestamp=$(date '+%Y%m%d_%H%M%S')
+    local backup_file="$backup_dir/ssl_backup_$timestamp.tar.gz"
+    
+    log "INFO" "创建SSL证书备份"
+    
+    mkdir -p "$backup_dir"
+    
+    if tar -czf "$backup_file" -C "${SSL_CERTS_DIR:-/opt/ssl/certs}" . 2>/dev/null; then
+        log "SUCCESS" "备份已创建: $backup_file"
+        echo "备份文件: $backup_file"
+        echo "备份大小: $(du -h "$backup_file" | cut -f1)"
+    else
+        error_exit "创建备份失败"
+    fi
+}
+
+# 主函数
+main() {
+    # 检查参数
+    if [[ $# -eq 0 ]]; then
+        show_help
+        exit 0
+    fi
+    
+    # 解析选项
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -v|--verbose)
+                LOG_LEVEL="DEBUG"
+                shift
+                ;;
+            -q|--quiet)
+                LOG_LEVEL="ERROR"
+                shift
+                ;;
+            -c|--config)
+                CONFIG_FILE="$2"
+                shift 2
+                ;;
+            --api-base)
+                API_BASE="$2"
+                shift 2
+                ;;
+            --token)
+                ADMIN_TOKEN="$2"
+                shift 2
+                ;;
+            --format)
+                OUTPUT_FORMAT="$2"
+                shift 2
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+    
+    # 检查依赖和初始化
+    check_dependencies
+    load_config
+    acquire_lock
+    
+    # 解析命令
+    local command="$1"
+    shift
+    
+    case "$command" in
+        list)
+            cmd_list "${OUTPUT_FORMAT:-table}"
+            ;;
+        show)
+            [[ $# -eq 0 ]] && error_exit "需要指定域名"
+            cmd_show "$1"
+            ;;
+        obtain)
+            [[ $# -lt 2 ]] && error_exit "需要指定域名和邮箱"
+            cmd_obtain "$1" "$2" "${3:-HTTP01}"
+            ;;
+        upload)
+            [[ $# -lt 3 ]] && error_exit "需要指定域名、证书文件和私钥文件"
+            cmd_upload "$1" "$2" "$3" "${4:-}"
+            ;;
+        renew)
+            [[ $# -eq 0 ]] && error_exit "需要指定域名"
+            cmd_renew "$1"
+            ;;
+        batch-validate)
+            [[ $# -eq 0 ]] && error_exit "需要指定证书ID列表"
+            cmd_batch_validate "$1"
+            ;;
+        batch-renew)
+            [[ $# -eq 0 ]] && error_exit "需要指定证书ID列表"
+            cmd_batch_renew "$1"
+            ;;
+        status)
+            cmd_status
+            ;;
+        metrics)
+            cmd_metrics
+            ;;
+        report)
+            cmd_report
+            ;;
+        performance)
+            cmd_performance
+            ;;
+        predictive)
+            cmd_predictive
+            ;;
+        backup)
+            cmd_backup
+            ;;
+        *)
+            error_exit "未知命令: $command"
+            ;;
+    esac
+}
+
+# 脚本入口
+main "$@"
